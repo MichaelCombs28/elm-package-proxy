@@ -3,42 +3,72 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	"fmt"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"regexp"
+	"strings"
+
+	log "github.com/sirupsen/logrus"
+
+	"github.com/MichaelCombs28/elm-package-proxy/elmproxy"
 
 	"github.com/elazarl/goproxy"
 )
 
+var dataDir = "./data"
+
+type NopLogger struct{}
+
+func (_ *NopLogger) Printf(format string, v ...interface{}) {}
+
 func main() {
+	// Set logging
+	log.SetFormatter(&log.JSONFormatter{})
+	logLevel := flag.String("log-level", "INFO", "Log Level PANIC, FATAL, INFO, DEBUG, TRACE")
+	flag.Parse()
+	level, err := log.ParseLevel(*logLevel)
+	orPanic(err)
+	log.SetLevel(level)
+
+	// Retrieve certs
+	// TODO CU-wndcr3: Overwrite certificate store to only provide package.elm-lang.org certificate
 	caCert, err := ioutil.ReadFile("./ca.crt")
-	if err != nil {
-		log.Fatal(err.Error())
-	}
 	orPanic(err)
 	caKey, err := ioutil.ReadFile("./ca.key")
 	orPanic(err)
-	log.Println("Setting CA")
-	setCA(caCert, caKey)
+	orPanic(setCA(caCert, caKey))
+
+	mux := elmproxy.Initialize()
+	log.Info("Initializing...")
+	_, err = elmproxy.FDataStore.GetAllPackages()
+	orPanic(err)
 	proxy := goproxy.NewProxyHttpServer()
+	proxy.Logger = &NopLogger{}
 	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).
 		HandleConnect(goproxy.AlwaysMitm)
 	proxy.OnRequest(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		log.Println("========Received===========")
-		b, _ := httputil.DumpRequestOut(r, true)
-		ioutil.WriteFile("./output/request.txt", b, 0777)
-		log.Println(r.URL.Path)
-		log.Println("========END===========")
-		resp := http.Response{}
-		resp.Body = ioutil.NopCloser(bytes.NewReader([]byte("FAKE")))
-		resp.StatusCode = 404
-		return r, goproxy.NewResponse(r, "application/json", 500, "FAILED")
+		if log.GetLevel() > log.InfoLevel {
+			log.Debug("Receiving request for ", r.URL.Path)
+			// Write requests to file in trace mode.
+			if log.GetLevel() == log.TraceLevel {
+				reqId := strings.Replace(r.URL.Path, "/", "_", -1)
+				b, _ := httputil.DumpRequestOut(r, true)
+				*r = *r.WithContext(context.WithValue(r.Context(), "id", reqId))
+				ioutil.WriteFile(fmt.Sprintf("./output/request_%s.txt", reqId), b, 0777)
+			}
+		}
+
+		if resp := mux(r); resp != nil {
+			return r, resp
+		}
+		return r, nil
 	})
 	// enable curl -p for all hosts on port 80
 	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*:80$"))).
@@ -55,7 +85,7 @@ func main() {
 			orPanic(err)
 			client.Write([]byte("HTTP/1.1 200 Ok\r\n\r\n"))
 			remoteBuf := bufio.NewReadWriter(bufio.NewReader(remote), bufio.NewWriter(remote))
-			log.Println("=============" + req.URL.Path + "=====================")
+			log.Debug("=============" + req.URL.Path + "=====================")
 			for {
 				req, err := http.ReadRequest(clientBuf.Reader)
 				orPanic(err)
@@ -67,15 +97,26 @@ func main() {
 				orPanic(clientBuf.Flush())
 			}
 		})
+	proxy.OnResponse(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+		if log.GetLevel() == log.TraceLevel {
+			old, err := ioutil.ReadAll(r.Body)
+			r.Body = ioutil.NopCloser(bytes.NewBuffer(old))
+			b, err := httputil.DumpResponse(r, true)
+			if err != nil {
+				log.Fatal(err.Error())
+			}
+			r.Body = ioutil.NopCloser(bytes.NewBuffer(old))
+			reqid := r.Request.Context().Value("id").(string)
+			ioutil.WriteFile(fmt.Sprintf("./output/response-%s.txt", reqid), b, 0777)
+		}
+		return r
+	})
 	verbose := flag.Bool("v", true, "should every proxy request be logged to stdout")
 	addr := flag.String("addr", ":8080", "proxy listen address")
 	flag.Parse()
 	proxy.Verbose = *verbose
+	log.Printf("Starting server on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, proxy))
-}
-
-func onAllPackages(r *http.Request) (*http.Response, error) {
-	return nil, nil
 }
 
 func setCA(caCert, caKey []byte) error {
