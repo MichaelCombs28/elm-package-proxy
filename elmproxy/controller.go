@@ -3,7 +3,7 @@ package elmproxy
 import (
 	"fmt"
 	"net/http"
-	"os"
+	"strconv"
 
 	"encoding/json"
 
@@ -14,44 +14,13 @@ import (
 	"github.com/elazarl/goproxy"
 )
 
-type ResponseWriterFacade struct {
-	headers    map[string][]string
-	bytes      []byte
-	statusCode int
-	edited     bool
-}
+// Routes
 
-var _ http.ResponseWriter = &ResponseWriterFacade{}
-
-func Initialize() func(r *http.Request) *http.Response {
-	// Create storage dir if not exists
-	_, err := os.Stat(*storageDirectory)
-	if os.IsNotExist(err) {
-		err := os.Mkdir(*storageDirectory, 0777)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-	} else if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	if _, err := os.Stat(fmt.Sprintf("%s/packages/", *storageDirectory)); err != nil {
-		if os.IsNotExist(err) {
-			if err := os.Mkdir(fmt.Sprintf("%s/packages/", *storageDirectory), 0777); err != nil {
-				log.Fatal(err.Error())
-			}
-		} else {
-			log.Fatal(err)
-		}
-	}
-
-	mux := mux.NewRouter()
-	mux.HandleFunc("/all-packages/since/{pkgNumber:[0-9]+}", packagesSince)
-	mux.HandleFunc("/all-packages", allPackages)
-
+func ProxyHandler() func(r *http.Request) *http.Response {
+	h := Router()
 	return func(r *http.Request) *http.Response {
 		w := NewWriterFacade()
-		mux.ServeHTTP(w, r)
+		h.ServeHTTP(w, r)
 		// Should use default proxy route if missing
 		if w.statusCode == 404 {
 			return nil
@@ -60,31 +29,60 @@ func Initialize() func(r *http.Request) *http.Response {
 	}
 }
 
+func Router() http.Handler {
+	mux := mux.NewRouter()
+	mux.HandleFunc("/all-packages/since/{pkgNumber:[0-9]+}", packagesSince)
+	mux.HandleFunc("/all-packages", allPackages)
+	return mux
+}
+
 func allPackages(w http.ResponseWriter, r *http.Request) {
-	p, err := FDataStore.GetAllPackages()
+	rw.RLock()
+	defer rw.RUnlock()
+	p, err := Packages.GetAllPackages()
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	if p == nil {
-		return
+	m := make(map[string][]string)
+	for _, pkg := range p {
+		if versions, ok := m[pkg.Name]; ok {
+			m[pkg.Name] = append(versions, pkg.Version)
+		} else {
+			m[pkg.Name] = []string{pkg.Version}
+		}
 	}
-
-	b, err := json.Marshal(p.Packages())
+	b, err := json.Marshal(m)
 	if err != nil {
 		log.Fatal(err)
 	}
 	w.Write(b)
+	w.WriteHeader(200)
 }
 
 func packagesSince(w http.ResponseWriter, r *http.Request) {
-	since := mux.Vars(r)["pkgNumber"]
-	log.Debug("Since: ", since)
-	p := []string{
-		"elm/core@1.0.0",
+	rw.RLock()
+	defer rw.RUnlock()
+	since, _ := strconv.ParseInt(mux.Vars(r)["pkgNumber"], 10, 64)
+	p, err := Packages.GetPackagesSince(uint64(since))
+	if err != nil {
+		log.Fatal(err)
 	}
-	b, _ := json.Marshal(p)
+	out := make([]string, len(p))
+	for i, pkg := range p {
+		out[i] = fmt.Sprintf("%s/%s", pkg.Name, pkg.Version)
+	}
+	b, _ := json.Marshal(out)
 	w.Write(b)
+	w.WriteHeader(200)
+}
+
+// ResponseWriter Facade
+//
+type ResponseWriterFacade struct {
+	headers    map[string][]string
+	bytes      []byte
+	statusCode int
+	edited     bool
 }
 
 func NewWriterFacade() *ResponseWriterFacade {

@@ -20,3 +20,4 @@ ca.crt
 ca.key
 data/
 output/
+db.sqlite3

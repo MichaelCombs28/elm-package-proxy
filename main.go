@@ -12,8 +12,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 
 	log "github.com/sirupsen/logrus"
 
@@ -29,6 +32,11 @@ type NopLogger struct{}
 func (_ *NopLogger) Printf(format string, v ...interface{}) {}
 
 func main() {
+	// Signals
+
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+
 	// Set logging
 	log.SetFormatter(&log.JSONFormatter{})
 	logLevel := flag.String("log-level", "INFO", "Log Level PANIC, FATAL, INFO, DEBUG, TRACE")
@@ -45,10 +53,16 @@ func main() {
 	orPanic(err)
 	orPanic(setCA(caCert, caKey))
 
-	mux := elmproxy.Initialize()
 	log.Info("Initializing...")
-	_, err = elmproxy.FDataStore.GetAllPackages()
+	err = elmproxy.Initialize()
 	orPanic(err)
+
+	mux := elmproxy.ProxyHandler()
+	// Initializing Sync worker
+	ctx, cancel := context.WithCancel(context.Background())
+	go elmproxy.SyncWorker(ctx)
+
+	// Proxy setup
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Logger = &NopLogger{}
 	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).
@@ -116,7 +130,9 @@ func main() {
 	flag.Parse()
 	proxy.Verbose = *verbose
 	log.Printf("Starting server on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, proxy))
+	go http.ListenAndServe(*addr, proxy)
+	<-done
+	cancel()
 }
 
 func setCA(caCert, caKey []byte) error {
