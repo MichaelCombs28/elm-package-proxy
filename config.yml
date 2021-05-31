@@ -1,0 +1,11 @@
+global:
+  logLevel: "INFO"
+services:
+  proxy: "localhost:8080"
+  api: "localhost:8081"
+  storage:
+    type: "filesystem"
+    dir: "./data"
+
+credentials:
+  github: "pac"

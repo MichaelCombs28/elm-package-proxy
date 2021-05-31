@@ -66,11 +66,8 @@ without modifications to the elm compiler.
 #### Private GitHub repository
 
 Currently, the elm compiler only supports searching github for packages,
-so as part of the proxy, a GitHub handler has been provided that appends a user provided API token
-to the API call to retrieve the zipball.
-
-If a repository is private, since you control that namespace in git, elm-proxy does not
-prefix with `private`, and a private namespace is not necessary.
+so as part of the proxy, a GitHub handler has been provided that appends a user provided Personal API token
+to the API call to retrieve the zipball, check the tag, etc.
 
 ### Creating a kernel Package
 

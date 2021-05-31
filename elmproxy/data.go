@@ -18,7 +18,6 @@ var (
 	httpClient   *http.Client = &http.Client{
 		Timeout: time.Second * 20,
 	}
-
 	lastSync int64 = 0
 )
 

@@ -10,11 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
-	"strings"
 	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 
 	"github.com/MichaelCombs28/elm-package-proxy/elmproxy"
 
@@ -22,10 +22,20 @@ import (
 )
 
 func main() {
-	listen := flag.String("proxy-listen", "localhost:8080", "Proxy Host string")
-	addr := flag.String("api-listen", "localhost:8081", "API server host string")
-	logLevel := flag.String("log-level", "INFO", "Log Level PANIC, FATAL, INFO, DEBUG, TRACE")
+	configFilePath := flag.String("config", "./config.yml", "Config file")
 	flag.Parse()
+
+	viper.SetDefault("services.proxy", "localhost:8080")
+	viper.SetDefault("services.api", "localhost:8081")
+	viper.SetDefault("global.logLevel", "INFO")
+	viper.SetConfigFile(*configFilePath)
+	viper.SetConfigType("yaml")
+
+	orPanic(viper.ReadInConfig())
+
+	proxyAddr := viper.GetString("services.proxy")
+	apiAddr := viper.GetString("services.api")
+	logLevel := viper.GetString("global.logLevel")
 
 	// Signals
 	done := make(chan os.Signal, 1)
@@ -33,7 +43,7 @@ func main() {
 
 	// Set logging
 	log.SetFormatter(&log.JSONFormatter{})
-	level, err := log.ParseLevel(*logLevel)
+	level, err := log.ParseLevel(logLevel)
 	orPanic(err)
 	log.SetLevel(level)
 
@@ -60,34 +70,30 @@ func main() {
 	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).
 		HandleConnect(goproxy.AlwaysMitm)
 	proxy.OnRequest(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+		log.Debugf("%s - %s%s", r.Method, r.URL.Host, r.URL.Path)
 		if resp := mux(r); resp != nil {
 			return r, resp
 		}
 
-		//TODO remove
-		if strings.Contains(r.URL.Path, "elm.json") || strings.Contains(r.URL.Path, "endpoint.json") || strings.Contains(r.URL.Path, "docs.json") && r.Method == "GET" {
-			return r, nil
-		}
-		//return r, nil
-		return r, goproxy.NewResponse(r, goproxy.ContentTypeText, 500, "")
+		return r, nil
+		//return r, goproxy.NewResponse(r, goproxy.ContentTypeText, 500, "")
 	})
-	proxy.OnRequest(goproxy.DstHostIs(*listen)).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		return r, mux(r)
-	})
+	proxy.OnRequest(goproxy.DstHostIs("api.github.com:443")).DoFunc(addGithubToken)
+	proxy.OnRequest(goproxy.DstHostIs("github.com:443")).DoFunc(addGithubToken)
 
-	log.Printf("Starting Proxy Server on %s", *listen)
+	log.Printf("Starting Proxy Server on %s", proxyAddr)
 	go func() {
-		if err := http.ListenAndServe(*listen, proxy); err != nil {
+		if err := http.ListenAndServe(proxyAddr, proxy); err != nil {
 			if err != http.ErrServerClosed {
 				log.Fatal("Server threw an error.", err)
 			}
 		}
 	}()
 	srv := &http.Server{
-		Addr:    *addr,
+		Addr:    apiAddr,
 		Handler: elmproxy.Router(),
 	}
-	log.Printf("Starting API Server on %s", *addr)
+	log.Printf("Starting API Server on %s", apiAddr)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("API server unexpected close. ", err)
@@ -131,3 +137,12 @@ func orPanic(err error) {
 type NopLogger struct{}
 
 func (_ *NopLogger) Printf(format string, v ...interface{}) {}
+
+func addGithubToken(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	log.Debugf("%s - %s%s", r.Method, r.URL.Host, r.URL.Path)
+	if token := viper.GetString("credentials.github"); token != "" {
+		log.Debug("Appending header to github request")
+		r.Header.Add("Authorization", "token "+token)
+	}
+	return r, nil
+}

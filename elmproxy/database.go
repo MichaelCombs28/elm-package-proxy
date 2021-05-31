@@ -40,6 +40,7 @@ type Package struct {
 	gorm.Model
 	Name    string `gorm:"index:pkgId,unique"`
 	Version string `gorm:"index:pkgId,unique"`
+	Hash    string
 	Private bool
 }
 
@@ -47,8 +48,14 @@ type PrivateNamespace struct {
 	Name string `gorm:"primaryKey" json:"name"`
 }
 
+type Endpoint struct {
+	Url  string `json:"url"`
+	Hash string `json:"hash"`
+}
+
 type PackageManager interface {
 	Initialize() error
+	GetPackage(name, version string) (*Package, error)
 	AddPackage(name, version string, private bool) (*Package, error)
 	AddPackageFromString(pkg string) (*Package, error)
 	GetAllPackages() ([]Package, error)
@@ -59,7 +66,9 @@ type PackageManager interface {
 	GetPublicCount() (uint64, error)
 	// Private packages
 	GetPrivatePackageNamespaces() ([]PrivateNamespace, error)
+	GetPrivatePackageNamespace(namespace string) (*PrivateNamespace, error)
 	CreatePrivatePackageNamespace(name string) (*PrivateNamespace, error)
+	UpdatePackage(*Package) (*Package, error)
 }
 
 type SqlitePackageManager struct {
@@ -86,6 +95,14 @@ func (m *SqlitePackageManager) Initialize() error {
 	}
 	m.db = db
 	return nil
+}
+
+func (m *SqlitePackageManager) GetPackage(name, version string) (*Package, error) {
+	pkg := &Package{}
+	if err := m.db.First(pkg, "name = ? AND version = ?", name, version).Error; err != nil {
+		return nil, err
+	}
+	return pkg, nil
 }
 
 func (m *SqlitePackageManager) AddPackage(name, version string, private bool) (*Package, error) {
@@ -152,10 +169,27 @@ func (m *SqlitePackageManager) GetPrivatePackageNamespaces() ([]PrivateNamespace
 	return namespaces, nil
 }
 
+func (m *SqlitePackageManager) GetPrivatePackageNamespace(namespace string) (*PrivateNamespace, error) {
+	ns := &PrivateNamespace{}
+	if err := m.db.First(ns, "name = ?", namespace).Error; err != nil {
+		return nil, err
+	}
+	return ns, nil
+}
+
 func (m *SqlitePackageManager) CreatePrivatePackageNamespace(namespace string) (*PrivateNamespace, error) {
-	p := &PrivateNamespace{namespace}
+	p := &PrivateNamespace{
+		Name: namespace,
+	}
 	if err := m.db.Create(p).Error; err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func (m *SqlitePackageManager) UpdatePackage(pkg *Package) (*Package, error) {
+	if err := m.db.Model(pkg).Updates(pkg).Error; err != nil {
+		return nil, err
+	}
+	return pkg, nil
 }

@@ -21,3 +21,4 @@ ca.key
 data/
 output/
 db.sqlite3
+config.local.yml
