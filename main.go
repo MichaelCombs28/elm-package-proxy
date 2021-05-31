@@ -1,22 +1,18 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
-	"fmt"
 	"io/ioutil"
-	"net"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"os/signal"
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
@@ -25,22 +21,18 @@ import (
 	"github.com/elazarl/goproxy"
 )
 
-var dataDir = "./data"
-
-type NopLogger struct{}
-
-func (_ *NopLogger) Printf(format string, v ...interface{}) {}
-
 func main() {
-	// Signals
+	listen := flag.String("proxy-listen", "localhost:8080", "Proxy Host string")
+	addr := flag.String("api-listen", "localhost:8081", "API server host string")
+	logLevel := flag.String("log-level", "INFO", "Log Level PANIC, FATAL, INFO, DEBUG, TRACE")
+	flag.Parse()
 
+	// Signals
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	// Set logging
 	log.SetFormatter(&log.JSONFormatter{})
-	logLevel := flag.String("log-level", "INFO", "Log Level PANIC, FATAL, INFO, DEBUG, TRACE")
-	flag.Parse()
 	level, err := log.ParseLevel(*logLevel)
 	orPanic(err)
 	log.SetLevel(level)
@@ -57,8 +49,8 @@ func main() {
 	err = elmproxy.Initialize()
 	orPanic(err)
 
-	mux := elmproxy.ProxyHandler()
 	// Initializing Sync worker
+	mux := elmproxy.ProxyHandler()
 	ctx, cancel := context.WithCancel(context.Background())
 	go elmproxy.SyncWorker(ctx)
 
@@ -68,71 +60,48 @@ func main() {
 	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).
 		HandleConnect(goproxy.AlwaysMitm)
 	proxy.OnRequest(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		if log.GetLevel() > log.InfoLevel {
-			log.Debug("Receiving request for ", r.URL.Path)
-			// Write requests to file in trace mode.
-			if log.GetLevel() == log.TraceLevel {
-				reqId := strings.Replace(r.URL.Path, "/", "_", -1)
-				b, _ := httputil.DumpRequestOut(r, true)
-				*r = *r.WithContext(context.WithValue(r.Context(), "id", reqId))
-				ioutil.WriteFile(fmt.Sprintf("./output/request_%s.txt", reqId), b, 0777)
-			}
-		}
-
 		if resp := mux(r); resp != nil {
 			return r, resp
 		}
-		return r, nil
-	})
-	// enable curl -p for all hosts on port 80
-	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*:80$"))).
-		HijackConnect(func(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
-			defer func() {
-				if e := recover(); e != nil {
-					ctx.Logf("error connecting to remote: %v", e)
-					client.Write([]byte("HTTP/1.1 500 Cannot reach destination\r\n\r\n"))
-				}
-				client.Close()
-			}()
-			clientBuf := bufio.NewReadWriter(bufio.NewReader(client), bufio.NewWriter(client))
-			remote, err := net.Dial("tcp", req.URL.Host)
-			orPanic(err)
-			client.Write([]byte("HTTP/1.1 200 Ok\r\n\r\n"))
-			remoteBuf := bufio.NewReadWriter(bufio.NewReader(remote), bufio.NewWriter(remote))
-			log.Debug("=============" + req.URL.Path + "=====================")
-			for {
-				req, err := http.ReadRequest(clientBuf.Reader)
-				orPanic(err)
-				orPanic(req.Write(remoteBuf))
-				orPanic(remoteBuf.Flush())
-				resp, err := http.ReadResponse(remoteBuf.Reader, req)
-				orPanic(err)
-				orPanic(resp.Write(clientBuf.Writer))
-				orPanic(clientBuf.Flush())
-			}
-		})
-	proxy.OnResponse(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-		if log.GetLevel() == log.TraceLevel {
-			old, err := ioutil.ReadAll(r.Body)
-			r.Body = ioutil.NopCloser(bytes.NewBuffer(old))
-			b, err := httputil.DumpResponse(r, true)
-			if err != nil {
-				log.Fatal(err.Error())
-			}
-			r.Body = ioutil.NopCloser(bytes.NewBuffer(old))
-			reqid := r.Request.Context().Value("id").(string)
-			ioutil.WriteFile(fmt.Sprintf("./output/response-%s.txt", reqid), b, 0777)
+
+		//TODO remove
+		if strings.Contains(r.URL.Path, "elm.json") || strings.Contains(r.URL.Path, "endpoint.json") || strings.Contains(r.URL.Path, "docs.json") && r.Method == "GET" {
+			return r, nil
 		}
-		return r
+		//return r, nil
+		return r, goproxy.NewResponse(r, goproxy.ContentTypeText, 500, "")
 	})
-	verbose := flag.Bool("v", true, "should every proxy request be logged to stdout")
-	addr := flag.String("addr", ":8080", "proxy listen address")
-	flag.Parse()
-	proxy.Verbose = *verbose
-	log.Printf("Starting server on %s", *addr)
-	go http.ListenAndServe(*addr, proxy)
+	proxy.OnRequest(goproxy.DstHostIs(*listen)).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+		return r, mux(r)
+	})
+
+	log.Printf("Starting Proxy Server on %s", *listen)
+	go func() {
+		if err := http.ListenAndServe(*listen, proxy); err != nil {
+			if err != http.ErrServerClosed {
+				log.Fatal("Server threw an error.", err)
+			}
+		}
+	}()
+	srv := &http.Server{
+		Addr:    *addr,
+		Handler: elmproxy.Router(),
+	}
+	log.Printf("Starting API Server on %s", *addr)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("API server unexpected close. ", err)
+		}
+	}()
 	<-done
 	cancel()
+	ctx, can := context.WithTimeout(context.Background(), 10*time.Second)
+	defer func() {
+		can()
+	}()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("API shutdown failed: %+v", err)
+	}
 }
 
 func setCA(caCert, caKey []byte) error {
@@ -156,3 +125,9 @@ func orPanic(err error) {
 		panic(err)
 	}
 }
+
+// Used to silence internal logging used by goproxy
+//
+type NopLogger struct{}
+
+func (_ *NopLogger) Printf(format string, v ...interface{}) {}

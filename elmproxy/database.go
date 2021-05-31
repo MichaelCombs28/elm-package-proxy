@@ -38,9 +38,13 @@ func Initialize() error {
 
 type Package struct {
 	gorm.Model
-	Name    string
-	Version string
+	Name    string `gorm:"index:pkgId,unique"`
+	Version string `gorm:"index:pkgId,unique"`
 	Private bool
+}
+
+type PrivateNamespace struct {
+	Name string `gorm:"primaryKey" json:"name"`
 }
 
 type PackageManager interface {
@@ -53,6 +57,9 @@ type PackageManager interface {
 	// Get a count of public packages
 	//
 	GetPublicCount() (uint64, error)
+	// Private packages
+	GetPrivatePackageNamespaces() ([]PrivateNamespace, error)
+	CreatePrivatePackageNamespace(name string) (*PrivateNamespace, error)
 }
 
 type SqlitePackageManager struct {
@@ -72,6 +79,9 @@ func (m *SqlitePackageManager) Initialize() error {
 		return err
 	}
 	if err := db.AutoMigrate(&Package{}); err != nil {
+		return err
+	}
+	if err := db.AutoMigrate(&PrivateNamespace{}); err != nil {
 		return err
 	}
 	m.db = db
@@ -132,4 +142,20 @@ func (m *SqlitePackageManager) GetPublicCount() (uint64, error) {
 		return 0, err
 	}
 	return uint64(i), nil
+}
+
+func (m *SqlitePackageManager) GetPrivatePackageNamespaces() ([]PrivateNamespace, error) {
+	var namespaces []PrivateNamespace
+	if err := m.db.Find(&namespaces).Error; err != nil {
+		return nil, err
+	}
+	return namespaces, nil
+}
+
+func (m *SqlitePackageManager) CreatePrivatePackageNamespace(namespace string) (*PrivateNamespace, error) {
+	p := &PrivateNamespace{namespace}
+	if err := m.db.Create(p).Error; err != nil {
+		return nil, err
+	}
+	return p, nil
 }

@@ -74,6 +74,7 @@ func fetchPackages() error {
 						Name:    name,
 						Version: version,
 					}
+					p += 1
 				}
 			}
 			if err := Packages.BatchCreate(pkgs); err != nil {
@@ -95,7 +96,7 @@ func fetchPackages() error {
 		if err := dec.Decode(&versions); err != nil {
 			return err
 		}
-		log.Debugf("Receved %d new versions", len(versions))
+		log.Debugf("Received %d new package(s)", len(versions))
 		for _, v := range versions {
 			if _, err := Packages.AddPackageFromString(v); err != nil {
 				return err

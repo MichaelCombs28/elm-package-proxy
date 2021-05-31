@@ -3,7 +3,9 @@ package elmproxy
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"encoding/json"
 
@@ -33,7 +35,59 @@ func Router() http.Handler {
 	mux := mux.NewRouter()
 	mux.HandleFunc("/all-packages/since/{pkgNumber:[0-9]+}", packagesSince)
 	mux.HandleFunc("/all-packages", allPackages)
+	mux.HandleFunc("/register", registerPackage)
+
+	// elmproxy API
+	mux.HandleFunc("/private-packages", privatePackages)
 	return mux
+}
+
+func registerPackage(w http.ResponseWriter, r *http.Request) {
+	//TODO CU-wq9tgp: Add authentication for private package management
+	//TODO CU-wq9tgz: Add github header injection for auth
+	w.WriteHeader(500)
+	w.Write([]byte("Not yet implemented."))
+}
+
+func privatePackages(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	// Retrieve list of private namespaces
+	case "GET":
+		namespaces, err := Packages.GetPrivatePackageNamespaces()
+		if err != nil {
+			log.Error(err.Error())
+			http.Error(w, "Internal Error", 500)
+			return
+		}
+		b, _ := json.Marshal(namespaces)
+		w.Write(b)
+		return
+	// Create private package namespace
+	case "POST":
+		n := struct {
+			Name string `json:"name"`
+		}{}
+		dec := json.NewDecoder(r.Body)
+		dec.Decode(&n)
+		if matches, err := regexp.Match("^[a-z][a-zA-Z0-9]+/[a-zA-Z0-9-]+", []byte(n.Name)); !matches || err != nil {
+			http.Error(w, "Invalid namespace name provided.", 400)
+			return
+		}
+		p, err := Packages.CreatePrivatePackageNamespace(n.Name)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				log.Error(err.Error())
+				http.Error(w, "Namespace already exists", 400)
+				return
+			}
+			log.Error(err.Error())
+			http.Error(w, "Internal Error", 500)
+			return
+		}
+		b, _ := json.Marshal(p)
+		w.Write(b)
+		w.WriteHeader(201)
+	}
 }
 
 func allPackages(w http.ResponseWriter, r *http.Request) {
@@ -69,11 +123,14 @@ func packagesSince(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]string, len(p))
 	for i, pkg := range p {
-		out[i] = fmt.Sprintf("%s/%s", pkg.Name, pkg.Version)
+		out[i] = fmt.Sprintf("%s@%s", pkg.Name, pkg.Version)
 	}
 	b, _ := json.Marshal(out)
 	w.Write(b)
 	w.WriteHeader(200)
+}
+
+func elmJson(w http.ResponseWriter, r *http.Request) {
 }
 
 // ResponseWriter Facade
@@ -120,7 +177,7 @@ func (w *ResponseWriterFacade) ToResponse(r *http.Request) *http.Response {
 	}
 	h := w.Header().Get("Content-Type")
 	if h == "" {
-		h = "text/plain"
+		h = "application/text"
 	}
 	return goproxy.NewResponse(r, h, w.statusCode, string(w.bytes))
 }
