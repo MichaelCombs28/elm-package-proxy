@@ -28,6 +28,8 @@ func main() {
 	viper.SetDefault("services.proxy", "localhost:8080")
 	viper.SetDefault("services.api", "localhost:8081")
 	viper.SetDefault("global.logLevel", "INFO")
+	viper.SetDefault("services.sync.interval", 600)
+	viper.SetDefault("services.database.file", "db.sqlite3")
 	viper.SetConfigFile(*configFilePath)
 	viper.SetConfigType("yaml")
 
@@ -69,8 +71,11 @@ func main() {
 	proxy.Logger = &NopLogger{}
 	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).
 		HandleConnect(goproxy.AlwaysMitm)
-	proxy.OnRequest(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	proxy.OnRequest(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 		log.Debugf("%s - %s%s", r.Method, r.URL.Host, r.URL.Path)
+		return r, nil
+	})
+	proxy.OnRequest(goproxy.DstHostIs("package.elm-lang.org:443")).DoFunc(func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 		if resp := mux(r); resp != nil {
 			return r, resp
 		}
@@ -80,6 +85,13 @@ func main() {
 	})
 	proxy.OnRequest(goproxy.DstHostIs("api.github.com:443")).DoFunc(addGithubToken)
 	proxy.OnRequest(goproxy.DstHostIs("github.com:443")).DoFunc(addGithubToken)
+	/*
+		proxy.OnResponse(goproxy.ReqHostMatches(regexp.MustCompile("^.*$"))).DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+			log.Debug(resp.Request.MultipartForm)
+			//b, _ := httputil.DumpResponse(resp, true)
+			return resp
+		})
+	*/
 
 	log.Printf("Starting Proxy Server on %s", proxyAddr)
 	go func() {

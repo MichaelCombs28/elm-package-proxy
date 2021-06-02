@@ -3,26 +3,25 @@ package elmproxy
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"net/http"
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 )
 
 // Continually synchronizes data with package.elm-lang.org
 //
 var (
-	syncInterval *int64       = flag.Int64("sync-interval", 600, "Time in seconds between synchronization attempts.")
-	httpClient   *http.Client = &http.Client{
+	httpClient *http.Client = &http.Client{
 		Timeout: time.Second * 20,
 	}
 	lastSync int64 = 0
 )
 
 func SyncWorker(ctx context.Context) {
-	ticker := time.NewTicker(time.Second * time.Duration(*syncInterval))
+	ticker := time.NewTicker(time.Second * time.Duration(viper.GetInt64("services.sync.interval")))
 	for ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
@@ -43,7 +42,7 @@ func SyncWorker(ctx context.Context) {
 func fetchPackages() error {
 	rw.Lock()
 	defer rw.Unlock()
-	if lastSync+*syncInterval/2 < time.Now().Unix() {
+	if lastSync+viper.GetInt64("services.sync.interval")/2 < time.Now().Unix() {
 		//Fetch packages
 
 		since, err := Packages.GetPublicCount()

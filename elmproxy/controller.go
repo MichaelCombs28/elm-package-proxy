@@ -1,6 +1,7 @@
 package elmproxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -9,9 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
-	"strings"
 
 	"encoding/json"
 
@@ -47,46 +46,42 @@ func Router() http.Handler {
 	mux.HandleFunc("/register", registerPackage)
 	mux.HandleFunc("/packages/{group}/{name}/{version}/elm.json", elmJson)
 	mux.HandleFunc("/packages/{group}/{name}/{version}/endpoint.json", endpoint)
-
-	// elmproxy API
-	mux.HandleFunc("/private-packages", privatePackages)
-	mux.HandleFunc("/private-packages/{group}/{name}", privatePackageSubmit).Methods("POST")
-	//mux.HandleFunc("/private-packages/{group}/{name}
+	mux.HandleFunc("/private-package", privatePackageSubmit)
 	return mux
 }
 
 func privatePackageSubmit(w http.ResponseWriter, r *http.Request) {
-	log.Fatal("Not yet implemented")
-	vars := mux.Vars(r)
-	group := vars["group"]
-	name := vars["name"]
-	namespace := fmt.Sprintf("%s/%s", group, name)
-	_, err := Packages.GetPrivatePackageNamespace(namespace)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			http.Error(w, "Namespace does not exist.", 404)
-			return
-		}
-		log.Error(err.Error())
-		http.Error(w, "Server Error", 500)
-		return
-	}
-	if !strings.HasPrefix(namespace, "elm/") && !strings.HasPrefix(namespace, "elm-explorations/") {
-		namespace = "private" + namespace
-	}
+	/*
+		// Download
+		// Hash
+		h := sha1.New()
+		b, _ := ioutil.ReadAll(r.Body)
+		h.Write(b)
+		bs := h.Sum(nil)
+	*/
+}
 
+type ElmJson struct {
+	Private bool `json:"private"`
 }
 
 //gocyclo:ignore
 func registerPackage(w http.ResponseWriter, r *http.Request) {
-	//TODO CU-wq9tgp: Add authentication for private package management
-	//TODO CU-wq9tgz: Add github header injection for auth
-	name := r.URL.Query().Get("name")
-	version := r.URL.Query().Get("version")
-	_, err := Packages.GetPrivatePackageNamespace(name)
-	if err == gorm.ErrRecordNotFound {
+	r2 := r.Clone(r.Context())
+	*r2 = *r
+	var b bytes.Buffer
+	b.ReadFrom(r.Body)
+	r.Body = ioutil.NopCloser(&b)
+	r2.Body = ioutil.NopCloser(bytes.NewReader(b.Bytes()))
+	f, _, _ := r2.FormFile("elm.json")
+	dec := json.NewDecoder(f)
+	ej := ElmJson{}
+	dec.Decode(&ej)
+	if !ej.Private {
 		return
 	}
+	name := r.URL.Query().Get("name")
+	version := r.URL.Query().Get("version")
 	if _, err := Packages.GetPackage(name, version); err != nil {
 		if err != gorm.ErrRecordNotFound {
 			log.Error(err.Error())
@@ -109,7 +104,7 @@ func registerPackage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid multipart payload", 400)
 		return
 	}
-	path := filepath.Join(*packageDirectory, name, version)
+	path := filepath.Join(viper.GetString("services.storage.dir"), "packages", name, version)
 
 	for err != io.EOF {
 		switch p.FormName() {
@@ -165,47 +160,6 @@ func registerPackage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(201)
 }
 
-func privatePackages(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	// Retrieve list of private namespaces
-	case "GET":
-		namespaces, err := Packages.GetPrivatePackageNamespaces()
-		if err != nil {
-			log.Error(err.Error())
-			http.Error(w, "Internal Error", 500)
-			return
-		}
-		b, _ := json.Marshal(namespaces)
-		w.Write(b)
-		return
-	// Create private package namespace
-	case "POST":
-		n := struct {
-			Name string `json:"name"`
-		}{}
-		dec := json.NewDecoder(r.Body)
-		dec.Decode(&n)
-		if matches, err := regexp.Match("^[a-zA-Z][a-zA-Z0-9]+/[a-zA-Z0-9-]+", []byte(n.Name)); !matches || err != nil {
-			http.Error(w, "Invalid namespace name provided.", 400)
-			return
-		}
-		p, err := Packages.CreatePrivatePackageNamespace(n.Name)
-		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
-				log.Error(err.Error())
-				http.Error(w, "Namespace already exists", 400)
-				return
-			}
-			log.Error(err.Error())
-			http.Error(w, "Internal Error", 500)
-			return
-		}
-		b, _ := json.Marshal(p)
-		w.Write(b)
-		w.WriteHeader(201)
-	}
-}
-
 func allPackages(w http.ResponseWriter, r *http.Request) {
 	rw.RLock()
 	defer rw.RUnlock()
@@ -248,17 +202,11 @@ func packagesSince(w http.ResponseWriter, r *http.Request) {
 
 func elmJson(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	pkg := fmt.Sprintf("%s/%s", vars["group"], vars["name"])
-	if _, err := Packages.GetPrivatePackageNamespace(pkg); err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return
-		}
-		log.Error(err)
-		http.Error(w, "Server error.", 500)
+	path := filepath.Join(viper.GetString("services.storage.dir"), "packages", vars["group"], vars["name"], vars["version"], "elm.json")
+	if _, err := os.Stat(path); err != nil {
 		return
 	}
-	elmJsonFile := filepath.Join(*packageDirectory, vars["group"], vars["name"], vars["version"], "elm.json")
-	b, err := ioutil.ReadFile(elmJsonFile)
+	b, err := ioutil.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			w.WriteHeader(404)
@@ -270,16 +218,9 @@ func elmJson(w http.ResponseWriter, r *http.Request) {
 
 func endpoint(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	pkg := fmt.Sprintf("%s/%s", vars["group"], vars["name"])
-	if _, err := Packages.GetPrivatePackageNamespace(pkg); err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return
-		}
-		log.Error(err)
-		http.Error(w, "Server error.", 500)
-		return
-	}
-	hashFile := filepath.Join(*packageDirectory, vars["group"], vars["name"], vars["version"], "endpoint.json")
+	path := filepath.Join(viper.GetString("services.storage.dir"), "packages", vars["group"], vars["name"], vars["version"], "endpoint.json")
+
+	hashFile := filepath.Join(path)
 	b, err := ioutil.ReadFile(hashFile)
 	if err != nil {
 		if os.IsNotExist(err) {

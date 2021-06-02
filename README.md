@@ -42,32 +42,16 @@ TODO
 Private packages can be created a couple of ways. The goal was to seamlessly integrate with
 existing elm compiler for the sake of private packages alone.
 
-#### Private Namespace
+#### Standard Elm Publish
 
-A private namespace allows the use of the standard `elm publish` mechanism,
-as well as the manual submission a private package using the [elm-alchemy](https://github.com/MichaelCombs28/TBD)
-tool without the need to configure github certs + API tokens.
+Just add `"private": true` to your elm.json and you're good to go.
+Conflicting packages that were deployed to both the official and private repositories,
+will default to using the private package.
 
-When a private namespace is created, any package published to that namespace eg. `MichaelCombs28/elm-base85` will create that package and store it privately.
+#### Manual Upload
 
-Using this package you would use:
-
-```sh
-elm install privateMichaelCombs28/elm-base85
-```
-
-Package names are prefixed with `private` in order to avoid conflicts with the official repositories.
-Conflict resolution is on the roadmap since this mechanism does not cover all edge cases.
-
-The main exception to this rule are namespaces prefixed with `elm/` or `elm-explorations/`.
-These namespace prefixes indicate the user wants to run kernel code provided by the user using `elm-alchemy`
-without modifications to the elm compiler.
-
-#### Private GitHub repository
-
-Currently, the elm compiler only supports searching github for packages,
-so as part of the proxy, a GitHub handler has been provided that appends a user provided Personal API token
-to the API call to retrieve the zipball, check the tag, etc.
+In the case of wanting to avoid all of the `elm publish` formalities, you can upload
+a package as a zip file.
 
 ### Creating a kernel Package
 
@@ -78,8 +62,7 @@ There are a couple of ways to create a kernel package using `elm-proxy`.
 Only repositories existing within the `elm` or `elm-explorations` namespaces are allowed to
 provide kernel code without modifications.
 
-You must create a private namespace named `elm` or `elm-explorations` and publish
-packages to it using `elm-alchemy`.
+You can only use these by uploading the package manually.
 
 #### Using forked compiler
 

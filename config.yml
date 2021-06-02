@@ -1,11 +1,13 @@
 global:
   logLevel: "INFO"
 services:
+  database:
+    file: "db.sqlite3"
   proxy: "localhost:8080"
   api: "localhost:8081"
+  sync:
+    interval: 600
   storage:
-    type: "filesystem"
     dir: "./data"
-
 credentials:
   github: "pac"

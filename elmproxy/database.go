@@ -2,31 +2,30 @@ package elmproxy
 
 import (
 	"errors"
-	"flag"
 	"os"
 	"strings"
 	"sync"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 var (
-	packageDirectory *string = flag.String("package-dir", "./data/packages/", "Where private packages are stored")
-	dbName           *string = flag.String("db-name", "", "Database name")
-	rw               sync.RWMutex
-	Packages         PackageManager = &SqlitePackageManager{}
+	rw       sync.RWMutex
+	Packages PackageManager = &SqlitePackageManager{}
 )
 
 func Initialize() error {
 	if err := Packages.Initialize(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(*packageDirectory); err != nil {
+	dir := viper.GetString("services.storage.dir")
+	if _, err := os.Stat(dir); err != nil {
 		if os.IsNotExist(err) {
-			log.Debugf("Creating package directory at %s", *packageDirectory)
-			if err := os.MkdirAll(*packageDirectory, 0777); err != nil {
+			log.Debugf("Creating package directory at %s", dir)
+			if err := os.MkdirAll(dir, 0777); err != nil {
 				return err
 			}
 		} else {
@@ -80,10 +79,7 @@ func (m *SqlitePackageManager) BatchCreate(pkgs []Package) error {
 }
 
 func (m *SqlitePackageManager) Initialize() error {
-	if *dbName == "" {
-		*dbName = "db.sqlite3"
-	}
-	db, err := gorm.Open(sqlite.Open(*dbName))
+	db, err := gorm.Open(sqlite.Open(viper.GetString("services.database.file")))
 	if err != nil {
 		return err
 	}
