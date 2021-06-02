@@ -1,7 +1,7 @@
 ROOT_DIR=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 clean:
-	rm elm-package-proxy db.sqlite3
+	rm -rf elm-package-proxy db.sqlite3 data
 
 configure:
 	cd /tmp && \
